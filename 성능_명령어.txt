@@ -1,0 +1,10 @@
+cat /var/log/keystone/keystone.log
+pgrep –l keystone
+ps –aux | grep keystone
+lsof –i:35357
+lsof –i:5000
+grep -irE 'error|critical' /var/log/glance/
+cat /etc/glance/glance-api.conf | grep password
+grep -irE 'critical|error|warning|failure' /var/log/glance
+
+tail –f /va/log/nova/nova-api.log

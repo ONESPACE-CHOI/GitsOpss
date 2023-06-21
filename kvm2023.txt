@@ -1,0 +1,286 @@
+- CentOS7 DVD iso 파일로 Centos7 설치
+- vCpu 4개, RAM 4GB(4096MB), 100GB 사양의 CentOS7 VM을 생성
+- virt-manager를 사용하기 위하여 Server with GUI (GUI 환경)로 설치
+- KVM host 1은 192.168.88.152로 KVM host 1은 192.168.88.153으로 설정
+
+
+*KVM 설치
+
+- NetworkManager 서비스 중지
+ systemctl stop NetworkManager
+ systemctl disable NetworkManager
+
+-방화벽 서비스 중지
+ systemctl stop firewalld
+ systemctl disable firewalld
+ iptables -L
+
+- 네트워크 NIC 설정 및 활성화
+ vi /etc/sysconfig/network-scripts/ifcfg-ens33
+--------------------------------------------------
+TYPE=Ethernet
+BOOTPROTO=static  -- dhcp 쓰면 공유기의 모든 대역폭을 쓰기 때문에 DNS정보가 필요없다.
+DEVICE=ens33
+NAME=ens33
+IPADDR=192.168.88.152
+NETMASK=255.255.255.0
+GATEWAY=192.168.88.1
+ONBOOT=yes  -- broadcasting해서 내 ip를 알리기 위해서 yes로 해야함
+DNS1= 8.8.8.8
+---------------------------------------------------
+- 저장후 네트워크 재시작
+ systemctl restart network
+
+-- 보안 프로그램(셋팅 시 비활성화 해야한다)
+- Selinux 설정 비활성화
+ vi /etc/selinux/config
+SELINUX=disabled
+-재부팅해야 설정 적용
+ reboot
+
+- CPU 가상화 지원 확인
+-- svm : AMD가상화(AMD-V)
+-- vmx : Intel가상화(Intel-VT)
+-- lm : 64 bit
+-- 이것을 했을 때 빨간색으로 표시가 안되면 가상화가 안되어있는 것이다.
+--> BIOS에서 가상화enabled를 해줘야 함.
+grep --color -Ew ‘svm|vmx|lm’ /proc/cpuinfo
+
+
+-- lsmod : list module - 무슨 모듈이 있는지 확인
+lsmod | grep kvm
+lscpu
+
+-yum 레퍼지토리 업데이트
+ yum update -y
+
+- 하이퍼바이저 기능을 위한 “Virtualization Host” 그룹 패키지 설치
+ yum groupinfo "Virtualization Host" -y
+
+- 하이퍼바이저 관리 도구 설치
+ yum install virt-manager openssh-askpass virt-install virt-viewer virt-top -y
+
+ systemctl start libvirtd
+ systemctl enable libvirtd
+
+- virt-host-validate : 하이퍼 바이저 시스템 가용성 확인 명령
+
+ virt-host-validate
+------------------------------------------------------------------------------------------------------
+ QEMU: Checking for hardware virtualization                                 : PASS
+ QEMU: Checking if device /dev/kvm exists                                   : PASS
+ QEMU: Checking if device /dev/kvm is accessible                            : PASS
+ QEMU: Checking if device /dev/vhost-net exists                             : PASS
+ QEMU: Checking if device /dev/net/tun exists                               : PASS
+ … 중략 
+------------------------------------------------------------------------------------------------------
+
+- virsh nodeinfo : 시스템 물리 자원 정보 확인 명령
+		: host 컴퓨터 정보
+ virsh nodeinfo
+-------------------------------------------------------
+ CPU model:           x86_64
+ CPU(s):              4 CPU
+ frequency:       3707 MHz 
+ CPU socket(s):       4 
+ Core(s) per socket:  1
+ Thread(s) per core:  1 NUMA cell(s):        1
+ Memory size:         8388020 KiB
+-------------------------------------------------------
+
+virsh domcapabilities : 가상 시스템 가용성을 XML 로 출력
+			: 용량을 정해준 것을 보여줌(Openstack의 쿼터와 같음)
+			: range에 지정하여 용량을 변경해줄 수 있음(내 pc)
+
+- Nested KVM 설정
+ vi /etc/modprobe.d/kvm.conf
+---------------------------------------------------
+options kvm_intel nested=1
+options kvm_amd netsted=1
+---------------------------------------------------
+
+ modprobe -r kvm_intel -- kvm 커널 지우는 명령어
+			-- 지우고 lsmode하면 안나옴
+ modprobe kvm_intel -- kvm 커널 살리는 명령어
+
+: kvm이 가끔 내려가기 때문에 살리는 명령어가 나온것
+
+
+
+* VM 생성
+ cd /var/lib/libvirt/images -- kvm에서 이미지를 다운받으면 다 여기에 저장됌.
+wget http://download.cirros-cloud.net/0.3.0/cirros-0.3.0-i386-disk.img
+
+sudo virt-install --connect=qemu:///system --name=cirros --ram=512 --vcpus=1 \
+--disk cirros-0.3.0-i386-disk.img,format=qcow2 --import --network bridge=virbr0  \
+--graphics vnc,port=5999  \
+--console pty,target_type=serial
+
+virtual shell 
+virsh list --all    virt shell list보여줌
+virsh start 
+virsh destroy 
+
+lsmod | grep bridge
+brctl addbr tester
+brctl show
+ifconfig tester
+lsmod | grep tun
+ip tuntap add dev vm-vnic mode tap
+ip link show vm-vnic
+brctl addif tester vm-vnic
+
+brctl delif tester vm-vnic
+ip tuntap del dev vm-vnic mode tap
+brctl delbr teste
+
+-- network 관련
+virsh net-list
+virsh net-dumpxml routed
+virsh net-destroy nat
+virsh net-edit nat
+virsh net-start nat
+
+
+dd if=/dev/zero of=/vms/dbvm_disk2.img bs=1G count=5
+qemu-img info /vms/dbvm_disk2.img
+virsh attach-disk F22-01 /vms/dbvm_disk2.img vdb --live --config
+virsh domblklist F22-01 --details
+-- disk 정보
+virsh pool-list
+
+
+- Centos7 iso 파일 다운로드
+ cd /var/lib/libvirt/images
+ wget http://192.168.10.49/ISO/CentOS-7-x86_64-Minimal.iso
+
+- CentOS7 설치
+vCpu 1개, RAM 1GB(1024MB), 10GB, 네트워크는 NAT 사양의 CentOS7 VM을 생성
+
+cconnection detail -->
+
+* 네트워크 생성
+- isolated 네트워크 생성 : 192.168.102.0/24, DHCP 범위는 192.168.102.128 - 192.168.102.254로 설정 --> Isolated virtual network 선택
+
+- Routed 네트워크 생성 : 192.168.6.0/24,  DHCP 범위는 192.168.6.128 - 192.168.6.254로 설정 --> Forwarding to physical network 선택 --> Destination은 physical device em1 선택 --> mode는 Routed 선택
+
+- NAT 네트워크 생성 : 192.168.7.0/24,  DHCP 범위는 192.168.7.128 - 192.168.7.254로 설정  --> Forwarding to physical network 선택 --> Destination은 Any physical device 선택 --> mode는 NAT 선택
+
+ 
+* iscsi 스토리지 풀생성
+- virt-manager에서 iscsi target 아이피를 넣어 iscsi 스토리지풀을 생성한다.
+
+
+
+
+* Kimchi 설치
+- kimchi 다운로드 및 설치
+ yum -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
+ yum -y update
+EPEL (Extra Packages for Enterprise Linux) 은 Fedora Project 에서 제공되는 저장소로 각종 패키지의 최신 버전을 제공하는 community 기반의 저장소이다. 
+
+ yum install https://github.com/kimchi-project/kimchi/releases/download/2.5.0/wok-2.5.0-0.el7.centos.noarch.rpm
+
+ yum install https://github.com/kimchi-project/kimchi/releases/download/2.5.0/kimchi-2.5.0-0.el7.centos.noarch.rpm
+
+
+-  Kimchi 데몬 시작 및 시작프로그램에 추가
+ systemctl start wokd
+ systemctl enable wokd
+
+- firefox에서 https://localhost:8001 로 접속하여 실행확인
+
+https://atl.kr/dokuwiki/doku.php/kvm_-_wok_kimchi_manager
+
+systemctl disable NetworkManager
+systemctl disable firewalld
+
+yum -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
+yum -y update
+reboot
+
+ yum install https://github.com/kimchi-project/kimchi/releases/download/2.5.0/wok-2.5.0-0.el7.centos.noarch.rpm
+ yum install https://github.com/kimchi-project/kimchi/releases/download/2.5.0/kimchi-2.5.0-0.el7.centos.noarch.rpm
+
+ systemctl enable wokd
+ systemctl start wokd
+
+
+============================================================
+vbox
+
+https://technote.kr/213
+
+pnf vnf
+https://www.netmanias.com/ko/post/blog/14631/5g-sdn-nfv/evolution-to-5g-cloud-native-1
+
+===================================================================
+
+KVM 명령어
+
+grep --color -Ew ‘svm|vmx|lm’ /proc/cpuinfo
+lsmod | grep kvm
+lscpu
+virt-host-validate
+virsh nodeinfo
+virsh domcapabilities
+lsmod | grep bridge
+
+
+##OVS 브릿지 생성
+ovs-vsctl add-br br-int
+##OVS 브릿지 조회
+ovs-vsctl list-br
+##OVS 브릿지 정보 조회
+ovs-vsctl list bridge br-int
+##OVS 브릿지에 네트워크 인터페이스 추가
+ovs-vsctl add-port br-int eth0
+ovs-vsctl add-port br-lbaas bonds1.204 -- set interface bonds1.204 ofport=1
+##OVS 브릿지에 연결된 포트 조회
+ovs-vsctl list-ports br-int
+## OVS Controller 연결
+ovs-vsctl set-controller br-int tcp:127.0.0.1:6633
+## OVS VXLAN 설정
+ovs–vsctl add–port br1 vx1 — set interface vx1 type=vxlan options:remote_ip=192.168.1.10
+ovs–vsctl add–port br1 vx1 — set interface vx1 type=vxlan options:remote_ip=192.168.1.11
+#### openvswitch version 확인
+ovs-vsctl --version
+ovs-vswitchd -V
+#### ovs List all bridges
+ovs-vsctl list bridge
+#### ovs List all ports
+ovs-vsctl list port
+#### ovs 구성 상태 체크 ####
+ovs-vsctl show
+#### ovs dpdk bond 구성 상태 체크 ####
+ovs-appctl bond/show
+#### ovsdpdk bond 인터페이스 이름 확인  
+ovs-appctl bond/list
+#### nova compute 노드에서 br-int : mtu 변경 ####
+ovs-vsctl set int br-int mtu_request=1500
+#### nova compute 노드에서 br-int : mtu 확인 ####
+ovs-vsctl list Interface | grep mtu
+#### nova compute 노드에서 dpdk : linkspeed 확인 ####
+ovs-vsctl list interface dpdk0 | grep link_speed
+#### nova compute노드의 dpdk socket memory 확인 ####
+ovs-vsctl list Open_vSwitch | grep mem
+#### ovs-tcpdump
+ovs-tcpdump -i <interface_name> <other parameters>
+#### PMD Thread current stats:
+ovs-appctl dpif-netdev/pmd-stats-show
+#### Port/Rx Queue Assigment to PMD Threads show
+ovs-appctl dpif-netdev/pmd-rxq-show
+#### dpdk를 사용하는 vm 인터페이스 이름 확인
+ovs-vsctl find interface external_ids:vm-uuid="868ab0b9-d0cb-46e8-9b38-a8ed00775f12" | grep name
+#### vfio device 확인
+vfio device 확인
+#### dpdk 사용중인 인터페이스 확인
+dpdk-devbind -s
+#### dpdk nic의 pci 주소 확인후 unbind
+dpdk-devbind -u [pci_address]
+### Show flows on ovs
+ovs-appctl fdb/show <가상 bridge 이름>
+#### flows to forward packets between DPDK devices and VM ports
+ovs-ofctl dump-flows <가상 bridge 이름>
+
+ip netns
